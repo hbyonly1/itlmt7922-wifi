@@ -258,10 +258,55 @@ void itlmt7922::stop(IOService *provider)
         IOLockUnlock(workerLock);
     }
     quiesceHardware();
+    parkHardware();
     regs=nullptr;
     if (bar0) { bar0->release(); bar0=nullptr; }
     if (pci) { pci->close(this); pci->release(); pci=nullptr; }
     super::stop(provider);
+}
+
+// A restart or power-off normally does not terminate drivers, so stop() never runs and the card keeps its firmware running
+// with bus mastering on while the next OS (or the firmware's boot code) starts. Do the same clean-up from here.
+void itlmt7922::systemWillShutdown(IOOptionBits specifier)
+{
+    __atomic_store_n(&stopping,true,__ATOMIC_RELEASE);
+    m3linkUp=false;
+    if (workerLock) {
+        IOLockLock(workerLock);
+        while (workerRunning) IOLockSleep(workerLock,&workerRunning,THREAD_UNINT);
+        IOLockUnlock(workerLock);
+    }
+    quiesceHardware();
+    parkHardware();
+    super::systemWillShutdown(specifier);
+}
+
+// Leave the card the way a cold start finds it: firmware stopped, DMA off, ownership with the firmware, bus mastering off.
+// Runs with `stopping` already set, so pollA() would give up after a single read; the waits below are bounded loops instead.
+void itlmt7922::parkHardware()
+{
+    if (parked || !pci || !regs) return;
+    parked = true;
+    if (rdA(MT_HW_CHIPID) == 0xffffffffu) return;            // the card is not answering (removed or already off)
+    wrA(MT_WFDMA0_HOST_INT_ENA, 0);
+    wrA(MT_PCIE_MAC_INT_ENABLE, 0);
+    // Same WFSYS reset as mt7921_wfsys_reset(): it stops the firmware and the WFDMA engine.
+    rmwA(MT_WFSYS_SW_RST_B, WFSYS_SW_RST_B, 0);
+    IODelay(50000);
+    rmwA(MT_WFSYS_SW_RST_B, 0, WFSYS_SW_RST_B);
+    for (uint32_t t = 0; t < 500 && !(rdA(MT_WFSYS_SW_RST_B) & WFSYS_SW_INIT_DONE); t++) IODelay(1000);
+    // Give ownership back to the firmware (mt7921e_mcu_fw_pmctrl).
+    for (int i = 0; i < 10; i++) {
+        wrA(MT_CONN_ON_LPCTL, PCIE_LPCR_HOST_SET_OWN);
+        bool synced = false;
+        for (int t = 0; t < 50 && !synced; t++) {
+            synced = (rdA(MT_CONN_ON_LPCTL) & PCIE_LPCR_HOST_OWN_SYNC) != 0;
+            if (!synced) IODelay(1000);
+        }
+        if (synced) break;
+    }
+    pci->setBusMasterEnable(false);
+    busMasterOn = false;
 }
 
 void itlmt7922::free()
