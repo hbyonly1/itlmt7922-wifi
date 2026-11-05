@@ -1,0 +1,16 @@
+name: Build kext
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: itlmt7922-kext
+          path: build/itlmt7922.kext

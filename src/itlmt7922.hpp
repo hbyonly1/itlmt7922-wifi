@@ -53,6 +53,7 @@ public:
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
     void free() override;
+    void systemWillShutdown(IOOptionBits specifier) override;   // restart / power off: park the card (see parkHardware)
     IOReturn callPlatformFunction(const OSSymbol *, bool, void *, void *, void *, void *) override;
     // Ethernet interface glue (itlmt7922_eth.cpp): frames from the network stack / frames received from the AP
     // 0 sent, 1 no TX buffer free (the output queue keeps the frame until ethTxKick()), -1 dropped
@@ -73,7 +74,9 @@ public:
 
 private:
     bool busMasterOn = false;
+    bool parked = false;
     bool quiesceHardware();
+    void parkHardware();                     // reset the Wi-Fi subsystem and hand the card back to its firmware before the host goes away
     bool stopping = false, workerRunning = false, firmwareFault = false;
     IOLock *workerLock = nullptr;
     uint32_t diagnosticStage = 3;
